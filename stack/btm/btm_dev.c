@@ -157,17 +157,16 @@ BOOLEAN BTM_SecAddDevice (BD_ADDR bd_addr, DEV_CLASS dev_class, BD_NAME bd_name,
 }
 
 
-/*******************************************************************************
-**
-** Function         BTM_SecDeleteDevice
-**
-** Description      Free resources associated with the device.
-**
-** Parameters:      bd_addr          - BD address of the peer
-**
-** Returns          TRUE if removed OK, FALSE if not found or ACL link is active
-**
-*******************************************************************************/
+/** Free resources associated with the device associated with |bd_addr| address.
+ *
+ * *** WARNING ***
+ * tBTM_SEC_DEV_REC associated with bd_addr becomes invalid after this function
+ * is called, also any of it's fields. i.e. if you use p_dev_rec->bd_addr, it is
+ * no longer valid!
+ * *** WARNING ***
+ *
+ * Returns true if removed OK, false if not found or ACL link is active.
+ */
 BOOLEAN BTM_SecDeleteDevice (BD_ADDR bd_addr)
 {
     if (BTM_IsAclConnectionUp(bd_addr, BT_TRANSPORT_LE) ||
@@ -180,9 +179,11 @@ BOOLEAN BTM_SecDeleteDevice (BD_ADDR bd_addr)
     tBTM_SEC_DEV_REC *p_dev_rec = btm_find_dev(bd_addr);
     if (p_dev_rec != NULL)
     {
+        BD_ADDR bda;
+        memcpy(bda, bd_addr, BD_ADDR_LEN);
         btm_sec_free_dev(p_dev_rec);
         /* Tell controller to get rid of the link key, if it has one stored */
-        BTM_DeleteStoredLinkKey (p_dev_rec->bd_addr, NULL);
+        BTM_DeleteStoredLinkKey(bda, NULL);
     }
 
     return TRUE;
@@ -295,6 +296,10 @@ tBTM_SEC_DEV_REC *btm_sec_alloc_dev (BD_ADDR bd_addr)
 *******************************************************************************/
 void btm_sec_free_dev (tBTM_SEC_DEV_REC *p_dev_rec)
 {
+    p_dev_rec->bond_type = BOND_TYPE_UNKNOWN;
+    p_dev_rec->sec_flags = 0;
+    p_dev_rec->sm4 = BTM_SM4_UNKNOWN;
+
 #if BLE_INCLUDED == TRUE
     /* Clear out any saved BLE keys */
     btm_sec_clear_ble_keys (p_dev_rec);
@@ -469,7 +474,8 @@ void btm_consolidate_dev(tBTM_SEC_DEV_REC *p_target_rec)
 
             /* remove the combined record */
             list_remove(btm_cb.sec_dev_rec, p_dev_rec);
-            break;
+
+            p_dev_rec->bond_type = BOND_TYPE_UNKNOWN;
         }
 
         /* an RPA device entry is a duplicate of the target record */
@@ -483,7 +489,6 @@ void btm_consolidate_dev(tBTM_SEC_DEV_REC *p_target_rec)
                 /* remove the combined record */
                 list_remove(btm_cb.sec_dev_rec, p_dev_rec);
             }
-            break;
         }
     }
 #endif

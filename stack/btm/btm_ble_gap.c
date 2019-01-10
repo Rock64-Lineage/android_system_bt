@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <stddef.h>
 
+#include <log/log.h>
+
 #include "bt_types.h"
 #include "bt_utils.h"
 #include "btm_ble_api.h"
@@ -36,6 +38,7 @@
 #include "device/include/controller.h"
 #include "gap_api.h"
 #include "hcimsgs.h"
+#include "stack_config.h"
 
 #if BLE_INCLUDED == TRUE
 
@@ -951,6 +954,7 @@ static UINT8 btm_set_conn_mode_adv_init_addr(tBTM_BLE_INQ_CB *p_cb,
     tBTM_SEC_DEV_REC *p_dev_rec;
 #endif
 
+    BTM_TRACE_EVENT ("%s connectable mode=0x%0x scan_rsp=0x%x", __FUNCTION__, p_cb->connectable_mode, p_cb->scan_rsp);
     evt_type = (p_cb->connectable_mode == BTM_BLE_NON_CONNECTABLE) ? \
                 ((p_cb->scan_rsp) ? BTM_BLE_DISCOVER_EVT : BTM_BLE_NON_CONNECT_EVT )\
                 : BTM_BLE_CONNECT_EVT;
@@ -1882,8 +1886,13 @@ tBTM_STATUS btm_ble_set_connectability(UINT16 combined_mode)
 
     evt_type = btm_set_conn_mode_adv_init_addr(p_cb, p_addr_ptr, &peer_addr_type, &own_addr_type);
 
-    if (mode == BTM_BLE_NON_CONNECTABLE && p_cb->discoverable_mode == BTM_BLE_NON_DISCOVERABLE)
-        new_mode = BTM_BLE_ADV_DISABLE;
+    if (stack_config_get_interface()->get_pts_le_nonconn_adv_enabled())
+    {
+       if (combined_mode == BTM_BLE_ADV_STOP && p_cb->discoverable_mode == BTM_BLE_NON_DISCOVERABLE)
+            new_mode = BTM_BLE_ADV_DISABLE;
+    }
+    else if (mode == BTM_BLE_NON_CONNECTABLE && p_cb->discoverable_mode == BTM_BLE_NON_DISCOVERABLE)
+            new_mode = BTM_BLE_ADV_DISABLE;
 
     btm_ble_select_adv_interval(p_cb, evt_type, &adv_int_min, &adv_int_max);
 
@@ -2285,7 +2294,7 @@ static void btm_ble_parse_adv_data(tBTM_INQ_INFO *p_info, UINT8 *p_data,
 ** Returns          void
 **
 *******************************************************************************/
-void btm_ble_cache_adv_data(tBTM_INQ_RESULTS *p_cur, UINT8 data_len, UINT8 *p, UINT8 evt_type)
+BOOLEAN btm_ble_cache_adv_data(tBTM_INQ_RESULTS *p_cur, UINT8 data_len, UINT8 *p, UINT8 evt_type)
 {
     tBTM_BLE_INQ_CB     *p_le_inq_cb = &btm_cb.ble_ctr_cb.inq_var;
     UINT8 *p_cache;
@@ -2305,8 +2314,16 @@ void btm_ble_cache_adv_data(tBTM_INQ_RESULTS *p_cur, UINT8 data_len, UINT8 *p, U
         STREAM_TO_UINT8(length, p);
         while ( length && ((p_le_inq_cb->adv_len + length + 1) <= BTM_BLE_CACHE_ADV_DATA_MAX))
         {
+            /* adv record size must be smaller than the total adv data size */
+            if ((length + 1) > data_len) {
+                BTM_TRACE_ERROR("BTM - got incorrect LE advertising data");
+                android_errorWriteLog(0x534e4554, "33899337");
+                return FALSE;
+            }
             /* copy from the length byte & data into cache */
             memcpy(p_cache, p-1, length+1);
+            /* reduce the total data size by size of data copied */
+            data_len -= length + 1;
             /* advance the cache pointer past data */
             p_cache += length+1;
             /* increment cache length */
@@ -2316,6 +2333,7 @@ void btm_ble_cache_adv_data(tBTM_INQ_RESULTS *p_cur, UINT8 data_len, UINT8 *p, U
             STREAM_TO_UINT8(length, p);
         }
     }
+    return TRUE;
 
     /* parse service UUID from adv packet and save it in inq db eir_uuid */
     /* TODO */
@@ -2540,7 +2558,9 @@ BOOLEAN btm_ble_update_inq_result(tINQ_DB_ENT *p_i, UINT8 addr_type, UINT8 evt_t
         BTM_TRACE_WARNING("EIR data too long %d. discard", data_len);
         return FALSE;
     }
-    btm_ble_cache_adv_data(p_cur, data_len, p, evt_type);
+    if (!btm_ble_cache_adv_data(p_cur, data_len, p, evt_type)) {
+        return FALSE;
+    }
 
     p1 = (p + data_len);
     STREAM_TO_UINT8 (rssi, p1);

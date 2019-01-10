@@ -28,6 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <log/log.h>
+
 #include "bt_target.h"
 #include "btm_int.h"
 #include "btu.h"
@@ -112,7 +114,7 @@ void l2c_rcv_acl_data (BT_HDR *p_msg)
                 }
 
                 return;
-            } else {
+            } else if (handle != 0xedc) {    /* Handle 0xedc used for SOC Logging */
                 L2CAP_TRACE_ERROR ("L2CAP - rcvd ACL for unknown handle:%d ls:%d cid:%d"
                         " opcode:%d cur count:%d", handle, p_msg->layer_specific, rcv_cid,
                         cmd_code, list_length(l2cb.rcv_pending_q));
@@ -131,6 +133,14 @@ void l2c_rcv_acl_data (BT_HDR *p_msg)
     /* Extract the length and update the buffer header */
     STREAM_TO_UINT16 (hci_len, p);
     p_msg->offset += 4;
+
+    if (hci_len < L2CAP_PKT_OVERHEAD) {
+        /* Must receive at least the L2CAP length and CID */
+        L2CAP_TRACE_WARNING ("L2CAP - got incorrect hci header");
+        android_errorWriteLog(0x534e4554, "34946955");
+        osi_free(p_msg);
+        return;
+    }
 
     /* Extract the length and CID */
     STREAM_TO_UINT16 (l2cap_len, p);
@@ -154,17 +164,8 @@ void l2c_rcv_acl_data (BT_HDR *p_msg)
         }
     }
 
-    if (hci_len >= L2CAP_PKT_OVERHEAD)  /* Must receive at least the L2CAP length and CID.*/
-    {
-        p_msg->len    = hci_len - L2CAP_PKT_OVERHEAD;
-        p_msg->offset += L2CAP_PKT_OVERHEAD;
-    }
-    else
-    {
-        L2CAP_TRACE_WARNING ("L2CAP - got incorrect hci header" );
-        osi_free(p_msg);
-        return;
-    }
+    p_msg->len    = hci_len - L2CAP_PKT_OVERHEAD;
+    p_msg->offset += L2CAP_PKT_OVERHEAD;
 
     if (l2cap_len != p_msg->len)
     {
@@ -315,6 +316,12 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
         STREAM_TO_UINT8  (id, p);
         STREAM_TO_UINT16 (cmd_len, p);
 
+        if(cmd_len > BT_SMALL_BUFFER_SIZE)
+        {
+             L2CAP_TRACE_WARNING ("L2CAP - Invalid MTU Size");
+             l2cu_send_peer_cmd_reject (p_lcb, L2CAP_CMD_REJ_MTU_EXCEEDED, id, 0, 0);
+             return;
+        }
         /* Check command length does not exceed packet length */
         if ((p_next_cmd = p + cmd_len) > p_pkt_end)
         {
@@ -338,9 +345,17 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
         switch (cmd_code)
         {
         case L2CAP_CMD_REJECT:
+            if (p + 2 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (rej_reason, p);
             if (rej_reason == L2CAP_CMD_REJ_MTU_EXCEEDED)
             {
+                if (p + 2 > p_next_cmd) {
+                  android_errorWriteLog(0x534e4554, "74202041");
+                  return;
+                }
                 STREAM_TO_UINT16 (rej_mtu, p);
                 /* What to do with the MTU reject ? We have negotiated an MTU. For now */
                 /* we will ignore it and let a higher protocol timeout take care of it */
@@ -349,6 +364,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             }
             if (rej_reason == L2CAP_CMD_REJ_INVALID_CID)
             {
+                if (p + 4 > p_next_cmd) {
+                  android_errorWriteLog(0x534e4554, "74202041");
+                  return;
+                }
                 STREAM_TO_UINT16 (rcid, p);
                 STREAM_TO_UINT16 (lcid, p);
 
@@ -381,6 +400,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             break;
 
         case L2CAP_CMD_CONN_REQ:
+            if (p + 4 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (con_info.psm, p);
             STREAM_TO_UINT16 (rcid, p);
             if ((p_rcb = l2cu_find_rcb_by_psm (con_info.psm)) == NULL)
@@ -412,6 +435,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             break;
 
         case L2CAP_CMD_CONN_RSP:
+            if (p + 8 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (con_info.remote_cid, p);
             STREAM_TO_UINT16 (lcid, p);
             STREAM_TO_UINT16 (con_info.l2cap_result, p);
@@ -444,16 +471,24 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             cfg_rej = FALSE;
             cfg_rej_len = 0;
 
+            if (p + 4 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (lcid, p);
             STREAM_TO_UINT16 (cfg_info.flags, p);
 
             p_cfg_start = p;
 
             cfg_info.flush_to_present = cfg_info.mtu_present = cfg_info.qos_present =
-                cfg_info.fcr_present = cfg_info.fcs_present = FALSE;
+            cfg_info.fcr_present = cfg_info.fcs_present = FALSE;
 
             while (p < p_cfg_end)
             {
+                if (p + 2 > p_next_cmd) {
+                  android_errorWriteLog(0x534e4554, "74202041");
+                  return;
+                }
                 STREAM_TO_UINT8 (cfg_code, p);
                 STREAM_TO_UINT8 (cfg_len, p);
 
@@ -461,16 +496,28 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
                 {
                 case L2CAP_CFG_TYPE_MTU:
                     cfg_info.mtu_present = TRUE;
+                    if (p + 2 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT16 (cfg_info.mtu, p);
                     break;
 
                 case L2CAP_CFG_TYPE_FLUSH_TOUT:
                     cfg_info.flush_to_present = TRUE;
+                    if (p + 2 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT16 (cfg_info.flush_to, p);
                     break;
 
                 case L2CAP_CFG_TYPE_QOS:
                     cfg_info.qos_present = TRUE;
+                    if (p + 2 + 5 * 4 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT8  (cfg_info.qos.qos_flags, p);
                     STREAM_TO_UINT8  (cfg_info.qos.service_type, p);
                     STREAM_TO_UINT32 (cfg_info.qos.token_rate, p);
@@ -482,6 +529,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
 
                 case L2CAP_CFG_TYPE_FCR:
                     cfg_info.fcr_present = TRUE;
+                    if (p + 3 + 3 * 2 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT8 (cfg_info.fcr.mode, p);
                     STREAM_TO_UINT8 (cfg_info.fcr.tx_win_sz, p);
                     STREAM_TO_UINT8 (cfg_info.fcr.max_transmit, p);
@@ -492,11 +543,19 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
 
                 case L2CAP_CFG_TYPE_FCS:
                     cfg_info.fcs_present = TRUE;
+                    if (p + 1 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT8 (cfg_info.fcs, p);
                     break;
 
                 case L2CAP_CFG_TYPE_EXT_FLOW:
                     cfg_info.ext_flow_spec_present = TRUE;
+                    if (p + 2 + 2 + 3 * 4 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT8  (cfg_info.ext_flow_spec.id, p);
                     STREAM_TO_UINT8  (cfg_info.ext_flow_spec.stype, p);
                     STREAM_TO_UINT16 (cfg_info.ext_flow_spec.max_sdu_size, p);
@@ -509,6 +568,11 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
                     /* sanity check option length */
                     if ((cfg_len + L2CAP_CFG_OPTION_OVERHEAD) <= cmd_len)
                     {
+                        if (p + cfg_len > p_next_cmd)
+                        {
+                            android_errorWriteLog(0x534e4554, "79488381");
+                            return;
+                        }
                         p += cfg_len;
                         if ((cfg_code & 0x80) == 0)
                         {
@@ -547,6 +611,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
 
         case L2CAP_CMD_CONFIG_RSP:
             p_cfg_end = p + cmd_len;
+            if (p + 6 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (lcid, p);
             STREAM_TO_UINT16 (cfg_info.flags, p);
             STREAM_TO_UINT16 (cfg_info.result, p);
@@ -556,6 +624,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
 
             while (p < p_cfg_end)
             {
+                if (p + 2 > p_next_cmd) {
+                  android_errorWriteLog(0x534e4554, "74202041");
+                  return;
+                }
                 STREAM_TO_UINT8 (cfg_code, p);
                 STREAM_TO_UINT8 (cfg_len, p);
 
@@ -563,16 +635,28 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
                 {
                 case L2CAP_CFG_TYPE_MTU:
                     cfg_info.mtu_present = TRUE;
+                    if (p + 2 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT16 (cfg_info.mtu, p);
                     break;
 
                 case L2CAP_CFG_TYPE_FLUSH_TOUT:
                     cfg_info.flush_to_present = TRUE;
+                    if (p + 2 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT16 (cfg_info.flush_to, p);
                     break;
 
                 case L2CAP_CFG_TYPE_QOS:
                     cfg_info.qos_present = TRUE;
+                    if (p + 2 + 5 * 4 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT8  (cfg_info.qos.qos_flags, p);
                     STREAM_TO_UINT8  (cfg_info.qos.service_type, p);
                     STREAM_TO_UINT32 (cfg_info.qos.token_rate, p);
@@ -584,6 +668,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
 
                 case L2CAP_CFG_TYPE_FCR:
                     cfg_info.fcr_present = TRUE;
+                    if (p + 3 + 3 * 2 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT8 (cfg_info.fcr.mode, p);
                     STREAM_TO_UINT8 (cfg_info.fcr.tx_win_sz, p);
                     STREAM_TO_UINT8 (cfg_info.fcr.max_transmit, p);
@@ -594,11 +682,19 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
 
                 case L2CAP_CFG_TYPE_FCS:
                     cfg_info.fcs_present = TRUE;
+                    if (p + 1 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT8 (cfg_info.fcs, p);
                     break;
 
                 case L2CAP_CFG_TYPE_EXT_FLOW:
                     cfg_info.ext_flow_spec_present = TRUE;
+                    if (p + 2 + 2 + 3 * 4 > p_next_cmd) {
+                      android_errorWriteLog(0x534e4554, "74202041");
+                      return;
+                    }
                     STREAM_TO_UINT8  (cfg_info.ext_flow_spec.id, p);
                     STREAM_TO_UINT8  (cfg_info.ext_flow_spec.stype, p);
                     STREAM_TO_UINT16 (cfg_info.ext_flow_spec.max_sdu_size, p);
@@ -629,6 +725,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             break;
 
         case L2CAP_CMD_DISC_REQ:
+            if (p + 4 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (lcid, p);
             STREAM_TO_UINT16 (rcid, p);
 
@@ -646,6 +746,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             break;
 
         case L2CAP_CMD_DISC_RSP:
+            if (p + 4 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (rcid, p);
             STREAM_TO_UINT16 (lcid, p);
 
@@ -659,7 +763,7 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             break;
 
         case L2CAP_CMD_ECHO_REQ:
-            l2cu_send_peer_echo_rsp (p_lcb, id, NULL, 0);
+            l2cu_send_peer_echo_rsp (p_lcb, id, p, cmd_len);
             break;
 
         case L2CAP_CMD_ECHO_RSP:
@@ -675,6 +779,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             break;
 
         case L2CAP_CMD_INFO_REQ:
+            if (p + 2 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (info_type, p);
             l2cu_send_peer_info_rsp (p_lcb, id, info_type);
             break;
@@ -687,6 +795,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
                 p_lcb->w4_info_rsp = FALSE;
             }
 
+            if (p + 4 > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "74202041");
+              return;
+            }
             STREAM_TO_UINT16 (info_type, p);
             STREAM_TO_UINT16 (result, p);
 
@@ -695,6 +807,10 @@ static void process_l2cap_cmd (tL2C_LCB *p_lcb, UINT8 *p, UINT16 pkt_len)
             if ( (info_type == L2CAP_EXTENDED_FEATURES_INFO_TYPE)
               && (result == L2CAP_INFO_RESP_RESULT_SUCCESS) )
             {
+                if (p + 4 > p_next_cmd) {
+                  android_errorWriteLog(0x534e4554, "74202041");
+                  return;
+                }
                 STREAM_TO_UINT32( p_lcb->peer_ext_fea, p );
 
 #if (L2CAP_NUM_FIXED_CHNLS > 0)

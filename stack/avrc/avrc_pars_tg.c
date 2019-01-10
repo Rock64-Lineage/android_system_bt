@@ -21,6 +21,7 @@
 #include "avrc_api.h"
 #include "avrc_defs.h"
 #include "avrc_int.h"
+#include "log/log.h"
 
 /*****************************************************************************
 **  Global data
@@ -169,6 +170,12 @@ static tAVRC_STS avrc_pars_vendor_cmd(tAVRC_MSG_VENDOR *p_msg, tAVRC_COMMAND *p_
             status = AVRC_STS_INTERNAL_ERR;
             break;
         }
+
+        if (p_result->get_cur_app_val.num_attr > AVRC_MAX_APP_ATTR_SIZE) {
+            android_errorWriteLog(0x534e4554, "63146237");
+            p_result->get_cur_app_val.num_attr = AVRC_MAX_APP_ATTR_SIZE;
+        }
+
         p_u8 = p_result->get_cur_app_val.attrs;
         for (xx=0, yy=0; xx< p_result->get_cur_app_val.num_attr; xx++)
         {
@@ -229,6 +236,11 @@ static tAVRC_STS avrc_pars_vendor_cmd(tAVRC_MSG_VENDOR *p_msg, tAVRC_COMMAND *p_
                     status = AVRC_STS_INTERNAL_ERR;
                 else
                 {
+                    if (p_result->get_app_val_txt.num_val > AVRC_MAX_APP_ATTR_SIZE) {
+                        android_errorWriteLog(0x534e4554, "63146237");
+                        p_result->get_app_val_txt.num_val = AVRC_MAX_APP_ATTR_SIZE;
+                    }
+
                     p_u8 = p_result->get_app_val_txt.vals;
                     for (xx=0; xx< p_result->get_app_val_txt.num_val; xx++)
                     {
@@ -330,7 +342,31 @@ static tAVRC_STS avrc_pars_vendor_cmd(tAVRC_MSG_VENDOR *p_msg, tAVRC_COMMAND *p_
 
     /* case AVRC_PDU_REQUEST_CONTINUATION_RSP: 0x40 */
     /* case AVRC_PDU_ABORT_CONTINUATION_RSP:   0x41 */
+    case AVRC_PDU_SET_ADDRESSED_PLAYER:
+        if (len != 2)
+        {
+           status = AVRC_STS_NOT_FOUND;
+           AVRC_TRACE_ERROR("AVRC_PDU_SET_ADDRESSED_PLAYER: bad len");
+        }
+        else
+        {
+            BE_STREAM_TO_UINT16 (p_result->addr_player.player_id, p);
+        }
+        break;
 
+    case AVRC_PDU_PLAY_ITEM:
+        if (len != 11)
+        {
+            status = AVRC_STS_NOT_FOUND;
+            AVRC_TRACE_ERROR("AVRC_PDU_PLAY_ITEM: bad len");
+        }
+        else
+        {
+            BE_STREAM_TO_UINT8 (p_result->play_item.scope, p);
+            BE_STREAM_TO_UINT64(p_result->play_item.uid, p);
+            BE_STREAM_TO_UINT16 (p_result->play_item.uid_counter, p);
+        }
+        break;
     default:
         status = AVRC_STS_BAD_CMD;
         break;
@@ -413,7 +449,7 @@ tAVRC_STS AVRC_ParsCommand (tAVRC_MSG *p_msg, tAVRC_COMMAND *p_result, UINT8 *p_
         p_result->cmd.opcode = p_msg->hdr.opcode;
         p_result->cmd.status = status;
     }
-    AVRC_TRACE_DEBUG("%s return status:0x%x", __func__, status);
+    BTIF_TRACE_IMP("AVRC_ParsCommand() return status:0x%x", status);
     return status;
 }
 

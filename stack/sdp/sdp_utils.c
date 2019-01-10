@@ -120,8 +120,9 @@ tCONN_CB *sdpu_allocate_ccb (void)
     {
         if (p_ccb->con_state == SDP_STATE_IDLE)
         {
+            alarm_t* alarm = p_ccb->sdp_conn_timer;
             memset(p_ccb, 0, sizeof(tCONN_CB));
-            p_ccb->sdp_conn_timer = alarm_new("sdp.sdp_conn_timer");
+            p_ccb->sdp_conn_timer = alarm;
             return (p_ccb);
         }
     }
@@ -143,8 +144,7 @@ tCONN_CB *sdpu_allocate_ccb (void)
 void sdpu_release_ccb (tCONN_CB *p_ccb)
 {
     /* Ensure timer is stopped */
-    alarm_free(p_ccb->sdp_conn_timer);
-    p_ccb->sdp_conn_timer = NULL;
+    alarm_cancel(p_ccb->sdp_conn_timer);
 
     /* Drop any response pointer we may be holding */
     p_ccb->con_state = SDP_STATE_IDLE;
@@ -158,6 +158,41 @@ void sdpu_release_ccb (tCONN_CB *p_ccb)
     osi_free_and_reset((void **)&p_ccb->rsp_list);
 }
 
+/*******************************************************************************
+**
+** Function         sdpu_update_ccb_cont_info
+**
+** Description      This function updates CCB's continuation information in the
+**                  case of a record being moved up one place in DB following
+**                  deletion of a record above.
+**
+** Returns          void
+**
+*******************************************************************************/
+void sdpu_update_ccb_cont_info (UINT32 handle)
+{
+    UINT16       xx;
+    tCONN_CB     *p_ccb;
+
+    /* Look through each connection control block */
+    for (xx = 0, p_ccb = sdp_cb.ccb; xx < SDP_MAX_CONNECTIONS; xx++, p_ccb++)
+    {
+        if ((p_ccb->con_state != SDP_STATE_IDLE) && (p_ccb->cont_info.curr_sdp_rec) && (p_ccb->cont_info.curr_sdp_rec->record_handle == handle))
+        {
+            if (handle == sdp_cb.server_db.record[0].record_handle)
+            {
+                /* The record is moved to the top of database. Resetting the prev_sdp_rec to NULL */
+                p_ccb->cont_info.curr_sdp_rec = NULL;
+                p_ccb->cont_info.prev_sdp_rec = NULL;
+            }
+            else
+            {
+                p_ccb->cont_info.curr_sdp_rec -= 1;
+                p_ccb->cont_info.prev_sdp_rec = p_ccb->cont_info.curr_sdp_rec -1;
+            }
+        }
+    }
+}
 
 /*******************************************************************************
 **
@@ -226,6 +261,8 @@ UINT8 *sdpu_build_attrib_seq (UINT8 *p_out, UINT16 *p_attr, UINT16 num_attrs)
 *******************************************************************************/
 UINT8 *sdpu_build_attrib_entry (UINT8 *p_out, tSDP_ATTRIBUTE *p_attr)
 {
+    if(!p_out)
+        return p_out;
     /* First, store the attribute ID. Goes as a UINT */
     UINT8_TO_BE_STREAM  (p_out, (UINT_DESC_TYPE << 3) | SIZE_TWO_BYTES);
     UINT16_TO_BE_STREAM (p_out, p_attr->id);
@@ -369,6 +406,8 @@ UINT8 *sdpu_extract_uid_seq (UINT8 *p, UINT16 param_len, tSDP_UUID_SEQ *p_seq)
     p_seq->num_uids = 0;
 
     /* A UID sequence is composed of a bunch of UIDs. */
+    if (sizeof(descr) > param_len) return (NULL);
+    param_len -= sizeof(descr);
 
     BE_STREAM_TO_UINT8 (descr, p);
     type = descr >> 3;
@@ -389,19 +428,25 @@ UINT8 *sdpu_extract_uid_seq (UINT8 *p, UINT16 param_len, tSDP_UUID_SEQ *p_seq)
         seq_len = 16;
         break;
     case SIZE_IN_NEXT_BYTE:
+        if (sizeof(uint8_t) > param_len) return (NULL);
+        param_len -= sizeof(uint8_t);
         BE_STREAM_TO_UINT8 (seq_len, p);
         break;
     case SIZE_IN_NEXT_WORD:
+        if (sizeof(uint16_t) > param_len) return (NULL);
+        param_len -= sizeof(uint16_t);
         BE_STREAM_TO_UINT16 (seq_len, p);
         break;
     case SIZE_IN_NEXT_LONG:
+        if (sizeof(uint32_t) > param_len) return (NULL);
+        param_len -= sizeof(uint32_t);
         BE_STREAM_TO_UINT32 (seq_len, p);
         break;
     default:
         return (NULL);
     }
 
-    if (seq_len >= param_len)
+    if (seq_len > param_len)
         return (NULL);
 
     p_seq_end = p + seq_len;
@@ -428,12 +473,15 @@ UINT8 *sdpu_extract_uid_seq (UINT8 *p, UINT16 param_len, tSDP_UUID_SEQ *p_seq)
             uuid_len = 16;
             break;
         case SIZE_IN_NEXT_BYTE:
+            if (p + sizeof(uint8_t) > p_seq_end) return NULL;
             BE_STREAM_TO_UINT8 (uuid_len, p);
             break;
         case SIZE_IN_NEXT_WORD:
+            if (p + sizeof(uint16_t) > p_seq_end) return NULL;
             BE_STREAM_TO_UINT16 (uuid_len, p);
             break;
         case SIZE_IN_NEXT_LONG:
+            if (p + sizeof(uint32_t) > p_seq_end) return NULL;
             BE_STREAM_TO_UINT32 (uuid_len, p);
             break;
         default:
@@ -441,8 +489,8 @@ UINT8 *sdpu_extract_uid_seq (UINT8 *p, UINT16 param_len, tSDP_UUID_SEQ *p_seq)
         }
 
         /* If UUID length is valid, copy it across */
-        if ((uuid_len == 2) || (uuid_len == 4) || (uuid_len == 16))
-        {
+        if (((uuid_len == 2) || (uuid_len == 4) || (uuid_len == 16)) &&
+            (p + uuid_len <= p_seq_end)) {
             p_seq->uuid_entry[p_seq->num_uids].len = (UINT16) uuid_len;
             BE_STREAM_TO_ARRAY (p, p_seq->uuid_entry[p_seq->num_uids].value, (int)uuid_len);
             p_seq->num_uids++;
@@ -483,33 +531,41 @@ UINT8 *sdpu_extract_attr_seq (UINT8 *p, UINT16 param_len, tSDP_ATTR_SEQ *p_seq)
     p_seq->num_attr = 0;
 
     /* Get attribute sequence info */
+    if (param_len < sizeof(descr)) return NULL;
+    param_len -= sizeof(descr);
     BE_STREAM_TO_UINT8 (descr, p);
     type = descr >> 3;
     size = descr & 7;
 
     if (type != DATA_ELE_SEQ_DESC_TYPE)
-        return (p);
+        return NULL;
 
     switch (size)
     {
     case SIZE_IN_NEXT_BYTE:
+        if (param_len < sizeof(uint8_t)) return NULL;
+        param_len -= sizeof(uint8_t);
         BE_STREAM_TO_UINT8 (list_len, p);
         break;
 
     case SIZE_IN_NEXT_WORD:
+        if (param_len < sizeof(uint16_t)) return NULL;
+        param_len -= sizeof(uint16_t);
         BE_STREAM_TO_UINT16 (list_len, p);
         break;
 
     case SIZE_IN_NEXT_LONG:
+        if (param_len < sizeof(uint32_t)) return NULL;
+        param_len -= sizeof(uint32_t);
         BE_STREAM_TO_UINT32 (list_len, p);
         break;
 
     default:
-        return (p);
+        return NULL;
     }
 
     if (list_len > param_len)
-        return (p);
+        return NULL;
 
     p_end_list = p + list_len;
 
@@ -521,7 +577,7 @@ UINT8 *sdpu_extract_attr_seq (UINT8 *p, UINT16 param_len, tSDP_ATTR_SEQ *p_seq)
         size = descr & 7;
 
         if (type != UINT_DESC_TYPE)
-            return (p);
+            return NULL;
 
         switch (size)
         {
@@ -532,20 +588,24 @@ UINT8 *sdpu_extract_attr_seq (UINT8 *p, UINT16 param_len, tSDP_ATTR_SEQ *p_seq)
             attr_len = 4;
             break;
         case SIZE_IN_NEXT_BYTE:
+            if (p + sizeof(uint8_t) > p_end_list) return NULL;
             BE_STREAM_TO_UINT8 (attr_len, p);
             break;
         case SIZE_IN_NEXT_WORD:
+            if (p + sizeof(uint16_t) > p_end_list) return NULL;
             BE_STREAM_TO_UINT16 (attr_len, p);
             break;
         case SIZE_IN_NEXT_LONG:
+            if (p + sizeof(uint32_t) > p_end_list) return NULL;
             BE_STREAM_TO_UINT32 (attr_len, p);
             break;
         default:
-            return (NULL);
+            return NULL;
             break;
         }
 
         /* Attribute length must be 2-bytes or 4-bytes for a paired entry. */
+        if (p + attr_len > p_end_list) return NULL;
         if (attr_len == 2)
         {
             BE_STREAM_TO_UINT16 (p_seq->attr_entry[p_seq->num_attr].start, p);
@@ -1011,10 +1071,13 @@ UINT8 *sdpu_build_partial_attrib_entry (UINT8 *p_out, tSDP_ATTRIBUTE *p_attr, UI
     }
 
     size_t len_to_copy = ((attr_len - *offset) < len) ? (attr_len - *offset) : len;
-    memcpy(p_out, &p_attr_buff[*offset], len_to_copy);
+    if(p_out)
+    {
+        memcpy(p_out, &p_attr_buff[*offset], len_to_copy);
 
-    p_out = &p_out[len_to_copy];
-    *offset += len_to_copy;
+        p_out = &p_out[len_to_copy];
+        *offset += len_to_copy;
+    }
 
     osi_free(p_attr_buff);
     return p_out;

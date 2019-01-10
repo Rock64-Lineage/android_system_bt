@@ -20,6 +20,7 @@
 
 #if SMP_INCLUDED == TRUE
 
+#include <cutils/log.h>
 #include <string.h>
 #include "smp_int.h"
 
@@ -770,6 +771,13 @@ void smp_sm_event(tSMP_CB *p_cb, tSMP_EVENT event, void *p_data)
     UINT8           curr_state = p_cb->state;
     tSMP_SM_TBL     state_table;
     UINT8           action, entry, i;
+
+    if (p_cb->role >= 2) {
+      SMP_TRACE_DEBUG("Invalid role: %d", p_cb->role);
+      android_errorWriteLog(0x534e4554, "74121126");
+      return;
+    }
+
     tSMP_ENTRY_TBL  entry_table =  smp_entry_table[p_cb->role];
 
     SMP_TRACE_EVENT("main smp_sm_event");
@@ -816,7 +824,7 @@ void smp_sm_event(tSMP_CB *p_cb, tSMP_EVENT event, void *p_data)
     /* execute action functions */
     for (i = 0; i < SMP_NUM_ACTIONS; i++)
     {
-        if ((action = state_table[entry-1][i]) != SMP_SM_NO_ACTION)
+        if ((action = state_table[entry-1][i]) < SMP_SM_NO_ACTION)
         {
             (*smp_sm_action[action])(p_cb, (tSMP_INT_DATA *)p_data);
         }
@@ -851,7 +859,7 @@ const char * smp_get_event_name(tSMP_EVENT event)
 {
     const char *p_str = smp_event_name[SMP_MAX_EVT];
 
-    if (event <= SMP_MAX_EVT)
+    if (event && event <= SMP_MAX_EVT)
     {
         p_str = smp_event_name[event- 1];
     }

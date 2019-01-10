@@ -98,6 +98,10 @@ l2cap_client_t *l2cap_client_new(const l2cap_client_callbacks_t *callbacks, void
   }
 
   l2cap_client_t *ret = (l2cap_client_t *)osi_calloc(sizeof(l2cap_client_t));
+  if (ret == NULL) {
+    LOG_ERROR(LOG_TAG, "%s unable to allocate space for L2CAP client.", __func__);
+    return NULL;
+  }
 
   ret->callbacks = *callbacks;
   ret->context = context;
@@ -370,7 +374,8 @@ static void fragment_packet(l2cap_client_t *client, buffer_t *packet) {
   assert(packet != NULL);
 
   // TODO(sharvil): eliminate copy into BT_HDR.
-  BT_HDR *bt_packet = osi_malloc(buffer_length(packet) + L2CAP_MIN_OFFSET);
+  BT_HDR *bt_packet = osi_malloc(buffer_length(packet) + L2CAP_MIN_OFFSET +
+                                 sizeof(BT_HDR));
   bt_packet->offset = L2CAP_MIN_OFFSET;
   bt_packet->len = buffer_length(packet);
   memcpy(bt_packet->data + bt_packet->offset, buffer_ptr(packet), buffer_length(packet));
@@ -384,7 +389,8 @@ static void fragment_packet(l2cap_client_t *client, buffer_t *packet) {
       break;
     }
 
-    BT_HDR *fragment = osi_malloc(client->remote_mtu + L2CAP_MIN_OFFSET);
+    BT_HDR *fragment = osi_malloc(client->remote_mtu + L2CAP_MIN_OFFSET +
+                                  sizeof(BT_HDR));
     fragment->offset = L2CAP_MIN_OFFSET;
     fragment->len = client->remote_mtu;
     memcpy(fragment->data + fragment->offset, bt_packet->data + bt_packet->offset, client->remote_mtu);

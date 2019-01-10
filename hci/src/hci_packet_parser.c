@@ -37,9 +37,10 @@ static uint8_t *read_command_complete_header(
   size_t minimum_bytes_after);
 
 static void parse_generic_command_complete(BT_HDR *response) {
-  read_command_complete_header(response, NO_OPCODE_CHECKING, 0 /* bytes after */);
-
-  buffer_allocator->free(response);
+  if (response) {
+      read_command_complete_header(response, NO_OPCODE_CHECKING, 0 /* bytes after */);
+      buffer_allocator->free(response);
+  }
 }
 
 static void parse_read_buffer_size_response(
@@ -83,6 +84,21 @@ static void parse_read_local_supported_codecs_response(
       STREAM_TO_UINT8(*local_supported_codecs, stream);
       local_supported_codecs++;
     }
+  }
+
+  buffer_allocator->free(response);
+}
+
+
+static void parse_ble_read_offload_features_response(
+    BT_HDR *response,
+    bool *ble_offload_features_supported) {
+
+  uint8_t *stream = read_command_complete_header(response, NO_OPCODE_CHECKING, 0 /* bytes after */);
+  if(stream) {
+    *ble_offload_features_supported  = true;
+  } else {
+    *ble_offload_features_supported  = false;
   }
 
   buffer_allocator->free(response);
@@ -185,6 +201,7 @@ static void parse_ble_read_resolving_list_size_response(
     uint8_t *resolving_list_size_ptr) {
 
   uint8_t *stream = read_command_complete_header(response, HCI_BLE_READ_RESOLVING_LIST_SIZE, 1 /* bytes after */);
+  assert(stream != NULL);
   STREAM_TO_UINT8(*resolving_list_size_ptr, stream);
 
   buffer_allocator->free(response);
@@ -195,6 +212,7 @@ static void parse_ble_read_suggested_default_data_length_response(
     uint16_t *ble_default_packet_length_ptr) {
 
   uint8_t *stream = read_command_complete_header(response, HCI_BLE_READ_DEFAULT_DATA_LENGTH, 2 /* bytes after */);
+  assert(stream != NULL);
   STREAM_TO_UINT8(*ble_default_packet_length_ptr, stream);
 
   buffer_allocator->free(response);
@@ -256,7 +274,8 @@ static const hci_packet_parser_t interface = {
   parse_ble_read_local_supported_features_response,
   parse_ble_read_resolving_list_size_response,
   parse_ble_read_suggested_default_data_length_response,
-  parse_read_local_supported_codecs_response
+  parse_read_local_supported_codecs_response,
+  parse_ble_read_offload_features_response
 };
 
 const hci_packet_parser_t *hci_packet_parser_get_interface() {

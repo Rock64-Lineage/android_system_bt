@@ -22,6 +22,7 @@
  *  Functions.
  *
  ******************************************************************************/
+#include <log/log.h>
 #include <string.h>
 #include "bt_target.h"
 #include "bt_utils.h"
@@ -30,7 +31,7 @@
 #include "mca_api.h"
 #include "mca_defs.h"
 #include "mca_int.h"
-
+#include <unistd.h>
 
 #include  "btu.h"
 
@@ -109,8 +110,11 @@ void mca_ccb_snd_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
         p_dcb = mca_dcb_by_hdl(p_ccb->p_tx_req->dcb_idx);
         /* the Abort API does not have the associated mdl_id.
          * Get the mdl_id in dcb to compose the request */
-        p_msg->mdl_id = p_dcb->mdl_id;
-        mca_dcb_event(p_dcb, MCA_DCB_API_CLOSE_EVT, NULL);
+        if(p_dcb)
+        {
+            p_msg->mdl_id = p_dcb->mdl_id;
+            mca_dcb_event(p_dcb, MCA_DCB_API_CLOSE_EVT, NULL);
+        }
         osi_free_and_reset((void **)&p_ccb->p_tx_req);
         p_ccb->status = MCA_CCB_STAT_NORM;
         is_abort = TRUE;
@@ -122,7 +126,7 @@ void mca_ccb_snd_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
         p_ccb->p_tx_req = p_msg;
         if (!p_ccb->cong)
         {
-            BT_HDR *p_pkt = (BT_HDR *)osi_malloc(MCA_CTRL_MTU);
+            BT_HDR *p_pkt = (BT_HDR *)osi_malloc(MCA_CTRL_MTU + sizeof(BT_HDR));
 
             p_pkt->offset = L2CAP_MIN_OFFSET;
             p = p_start = (UINT8*)(p_pkt + 1) + L2CAP_MIN_OFFSET;
@@ -164,7 +168,7 @@ void mca_ccb_snd_rsp(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
     tMCA_CCB_MSG *p_msg = (tMCA_CCB_MSG *)p_data;
     UINT8   *p, *p_start;
     BOOLEAN chk_mdl = FALSE;
-    BT_HDR *p_pkt = (BT_HDR *)osi_malloc(MCA_CTRL_MTU);
+    BT_HDR *p_pkt = (BT_HDR *)osi_malloc(MCA_CTRL_MTU + sizeof(BT_HDR));
 
     MCA_TRACE_DEBUG("%s cong=%d req=%d", __func__, p_ccb->cong, p_msg->op_code);
     /* assume that API functions verified the parameters */
@@ -269,8 +273,17 @@ void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
     p_rx_msg = (tMCA_CCB_MSG *)p_pkt;
     p = (UINT8 *)(p_pkt + 1) + p_pkt->offset;
     evt_data.hdr.op_code = *p++;
-    BE_STREAM_TO_UINT16 (evt_data.hdr.mdl_id, p);
     reject_opcode = evt_data.hdr.op_code+1;
+
+    if (p_pkt->len >= 3)
+    {
+        BE_STREAM_TO_UINT16(evt_data.hdr.mdl_id, p);
+    }
+    else
+    {
+        android_errorWriteLog(0x534e4554, "110791536");
+        evt_data.hdr.mdl_id = 0;
+    }
 
     MCA_TRACE_DEBUG ("received mdl id: %d ", evt_data.hdr.mdl_id);
     if (p_ccb->status == MCA_CCB_STAT_PENDING)
@@ -395,6 +408,9 @@ void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
                 case MCA_OP_MDL_DELETE_REQ:
                     /* delete the associated mdl */
                     mca_dcb_close_by_mdl_id(p_ccb, evt_data.hdr.mdl_id);
+#if (defined(MCA_DELAY_DELETE_MDL_RSP) && MCA_DELAY_DELETE_MDL_RSP == TRUE)
+                    sleep(5);
+#endif
                     send_rsp = TRUE;
                     break;
                 }
@@ -404,7 +420,7 @@ void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 
     if (((reject_code != MCA_RSP_SUCCESS) && (evt_data.hdr.op_code != MCA_OP_SYNC_INFO_IND))
         || send_rsp) {
-        BT_HDR *p_buf = (BT_HDR *)osi_malloc(MCA_CTRL_MTU);
+        BT_HDR *p_buf = (BT_HDR *)osi_malloc(MCA_CTRL_MTU + sizeof(BT_HDR));
         p_buf->offset = L2CAP_MIN_OFFSET;
         p = p_start = (UINT8*)(p_buf + 1) + L2CAP_MIN_OFFSET;
         *p++ = reject_opcode;
@@ -481,7 +497,7 @@ void mca_ccb_hdl_rsp(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
             if (chk_mdl)
             {
                 p_dcb = mca_dcb_by_hdl(p_ccb->p_tx_req->dcb_idx);
-                if (evt_data.rsp.rsp_code == MCA_RSP_SUCCESS)
+                if (p_dcb && evt_data.rsp.rsp_code == MCA_RSP_SUCCESS)
                 {
                     if (evt_data.hdr.mdl_id != p_dcb->mdl_id)
                     {

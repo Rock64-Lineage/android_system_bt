@@ -41,6 +41,7 @@
 #include "btif_util.h"
 #include "osi/include/allocator.h"
 #include "utl.h"
+#include "stack_manager.h"
 
 static pthread_mutex_t sdp_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 
@@ -215,7 +216,8 @@ static int alloc_sdp_slot(bluetooth_sdp_record* in_record) {
 static int free_sdp_slot(int id) {
     int handle = -1;
     bluetooth_sdp_record* record = NULL;
-    if(id >= MAX_SDP_SLOTS) {
+    if (id < 0 || id >= MAX_SDP_SLOTS) {
+        android_errorWriteLog(0x534e4554, "37502513");
         APPL_TRACE_ERROR("%s() failed - id %d is invalid", __func__, id);
         return handle;
     }
@@ -242,6 +244,8 @@ static int free_sdp_slot(int id) {
 /***
  * Use this to get a reference to a SDP slot AND change the state to
  * SDP_RECORD_CREATE_INITIATED.
+ *
+ * Caller of this function should held mutex with sdp_lock
  */
 static const sdp_slot_t* start_create_sdp(int id) {
     sdp_slot_t* sdp_slot;
@@ -249,14 +253,12 @@ static const sdp_slot_t* start_create_sdp(int id) {
         APPL_TRACE_ERROR("%s() failed - id %d is invalid", __func__, id);
         return NULL;
     }
-    pthread_mutex_lock(&sdp_lock);
     if(sdp_slots[id].state == SDP_RECORD_ALLOCED) {
         sdp_slot = &(sdp_slots[id]);
     } else {
         /* The record have been removed before this event occurred - e.g. deinit */
         sdp_slot = NULL;
     }
-    pthread_mutex_unlock(&sdp_lock);
     if(sdp_slot == NULL) {
         APPL_TRACE_ERROR("%s() failed - state for id %d is "
                 "sdp_slots[id].state = %d expected %d", __func__,
@@ -264,11 +266,11 @@ static const sdp_slot_t* start_create_sdp(int id) {
     }
     return sdp_slot;
 }
-
+/***
+ * Caller of this function should held mutex with sdp_lock
+ */
 static void set_sdp_handle(int id, int handle) {
-    pthread_mutex_lock(&sdp_lock);
     sdp_slots[id].sdp_handle = handle;
-    pthread_mutex_unlock(&sdp_lock);
     BTIF_TRACE_DEBUG("%s() id=%d to handle=0x%08x", __FUNCTION__, id, handle);
 }
 
@@ -290,6 +292,11 @@ bt_status_t create_sdp_record(bluetooth_sdp_record *record, int* record_handle) 
 
 bt_status_t remove_sdp_record(int record_id) {
     int handle;
+
+    if (!stack_manager_get_interface()->get_stack_is_running()) {
+        BTIF_TRACE_DEBUG("Sdp Server %s - Stack closed", __FUNCTION__);
+        return BT_STATUS_FAIL;
+    }
 
     /* Get the Record handle, and free the slot */
     handle = free_sdp_slot(record_id);
@@ -318,6 +325,7 @@ void on_create_record_event(int id) {
      * 4) What to do at fail?
      * */
     BTIF_TRACE_DEBUG("Sdp Server %s", __FUNCTION__);
+    pthread_mutex_lock(&sdp_lock);
     const sdp_slot_t* sdp_slot = start_create_sdp(id);
     /* In the case we are shutting down, sdp_slot is NULL */
     if(sdp_slot != NULL) {
@@ -349,6 +357,7 @@ void on_create_record_event(int id) {
             set_sdp_handle(id, handle);
         }
     }
+    pthread_mutex_unlock(&sdp_lock);
 }
 
 void on_remove_record_event(int handle) {
